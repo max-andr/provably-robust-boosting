@@ -124,8 +124,6 @@ if __name__ == '__main__':
         n_trials_coord = 10
     elif args.weak_learner == 'tree':
         n_iter = 50
-        if args.dataset == 'mnist_2_6':
-            n_iter = 100
         n_trials_coord = 100
     else:
         raise ValueError('wrong weak learner')
