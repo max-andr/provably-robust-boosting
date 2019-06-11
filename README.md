@@ -4,6 +4,8 @@
 
 **University of Tübingen and Saarland University**
 
+[http://arxiv.org/abs/1906.03526](http://arxiv.org/abs/1906.03526)
+
 ## Reproducible research
 We provide code for **all** reported experiments with robust stumps and robust trees 
 (`exps.sh` to train the models). 
@@ -98,7 +100,7 @@ Please contact [Maksym Andriushchenko](https://github.com/max-andr) regarding th
 @article{andriushchenko2019provably,
   title={Provably Robust Boosted Decision Stumps and Trees against Adversarial Attacks},
   author={Andriushchenko, Maksym and Hein, Matthias},
-  conference={arxiv},
+  conference={arXiv preprint arXiv:1906.03526},
   year={2019}
 }
 ```
