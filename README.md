@@ -6,6 +6,12 @@
 
 [http://arxiv.org/abs/1906.03526](http://arxiv.org/abs/1906.03526)
 
+**Update**: now all our provably robust tree models are publicly available in folder `models`. 
+Since we perform sound, but incomplete robustness verification, there is still some room for improvement 
+(e.g. on MNIST 2-6), especially for larger Linf radii. We encourage researchers that work on verification
+of tree ensembles to benchmark the speed of their methods on our robust ensembles.
+
+
 ## Reproducible research
 We provide code for **all** reported experiments with robust stumps and robust trees 
 (`exps.sh` to train the models). 
@@ -56,6 +62,15 @@ wrt Linf-norm for boosted stumps:
 <p align="center"><img src="images/exact_adv_examples.png" width="800"></p>
 
 
+## Interpretability
+One of the main advantages of boosted trees is their interpretability and transparent decision making.
+Unlike neural networks, tree ensembles can be directly visualized based on which features they actually use 
+for classification. Here is an example for the first 10 trees of our provably robust MNIST 2 vs 6 model:
+<!-- ![](images/trees.gif) -->
+<p align="center"><img src="images/trees.gif" width="500"></p>
+
+
+
 ## Code for training provably robust boosted stumps and trees
 ### Training
 One can train robust stumps or trees using `train.py`.  The full list of possible arguments is 
@@ -72,9 +87,54 @@ Boosted trees models:
 
 Note that Linf epsilons for adversarial attacks are specified for each dataset separately in `data.py`.
 
+
 ### Evaluation
 `eval.py` and `exact_adv.ipynb` show how one can restore a trained model in order to evaluate it (e.g., to
 show the exact adversarial examples).
+
+
+### A simple example of training provably robust boosted trees
+```python
+import numpy as np
+import data
+from tree_ensemble import TreeEnsemble
+
+n_trees = 20  # total number of trees in the ensemble
+model = 'robust_bound'  # robust tree ensemble
+X_train, y_train, X_test, y_test, eps = data.all_datasets_dict['diabetes']()
+
+# initialize a tree ensemble with some hyperparameters
+ensemble = TreeEnsemble(weak_learner='tree', n_trials_coord=X_train.shape[1], 
+                        lr=1.0, min_samples_split=5, min_samples_leaf=10, max_depth=2, 
+                        gamma_hp=0.0, max_weight=1.0)
+# initialize gammas, per-example weights which are recalculated each iteration
+gamma = np.ones(X_train.shape[0])
+for i in range(1, n_trees + 1):
+    # fit a new tree in order to minimize the robust loss of the whole ensemble
+    weak_learner = ensemble.fit_tree(X_train, y_train, gamma, model, eps, depth=1)
+    ensemble.add_weak_learner(weak_learner)
+    ensemble.prune_last_tree(X_train, y_train, eps, model)
+    # calculate per-example weights for the next iteration
+    gamma = np.exp(-ensemble.certify_treewise_bound(X_train, y_train, eps))
+    
+    # track generalization and robustness
+    yf_test = y_test * ensemble.predict(X_test)
+    min_yf_test = ensemble.certify_treewise_bound(X_test, y_test, eps)
+    print('Iteration: {}, test error: {:.2%}, upper bound on robust test error: {:.2%}'.format(
+        i, np.mean(yf_test < 0.0), np.mean(min_yf_test < 0.0)))
+```
+```
+Iteration: 1, test error: 27.27%, upper bound on robust test error: 35.06%
+Iteration: 2, test error: 28.57%, upper bound on robust test error: 36.36%
+Iteration: 3, test error: 28.57%, upper bound on robust test error: 36.36%
+Iteration: 4, test error: 27.92%, upper bound on robust test error: 34.42%
+Iteration: 5, test error: 27.92%, upper bound on robust test error: 34.42%
+Iteration: 6, test error: 25.97%, upper bound on robust test error: 33.12%
+Iteration: 7, test error: 25.97%, upper bound on robust test error: 33.12%
+Iteration: 8, test error: 25.97%, upper bound on robust test error: 33.12%
+Iteration: 9, test error: 25.97%, upper bound on robust test error: 33.12%
+Iteration: 10, test error: 24.68%, upper bound on robust test error: 32.47%
+```
 
 ### Jupyter notebooks to reproduce the figures
 - `toy2d.ipynb` - Figure 1: toy dataset which shows that the usual training is non-robust, while our robust models
