@@ -3,18 +3,18 @@ import ipdb as pdb
 import copy
 from numba import jit, prange
 from collections import OrderedDict
-from robust_boosting import exp_loss_robust, coord_descent_exp_loss, bisect_coord_descent, calc_h, \
-    basic_case_two_intervals, dtype
+from robust_boosting import exp_loss_robust, coord_descent_exp_loss, basic_case_two_intervals, dtype
 from utils import minimum, get_contiguous_indices
-from stump_ensemble import Stump
 
 
 class Tree:
-    def __init__(self, left, right, w_l, w_r, b, coord):
+    def __init__(self, id_, left, right, w_l, w_r, b, coord, loss):
         # (left == None and right == None)  =>  leaf
         # else  =>  intermediate node
+        self.id, self.left, self.right = id_, left, right
         # Note: w_l/w_r can have some values, but if left AND right is not None, then w_l/w_r are just ignored.
-        self.left, self.right, self.w_l, self.w_r, self.b, self.coord = left, right, w_l, w_r, b, coord
+        # However, we still may need them because of pruning - if a leaf node was pruned, then its parent kicks in.
+        self.w_l, self.w_r, self.b, self.coord, self.loss = w_l, w_r, b, coord, loss
 
     def __repr__(self):
         lval, rval, threshold = self.w_l, self.w_r + self.w_l, self.b
@@ -40,6 +40,18 @@ class Tree:
             return (self.left == other.left and self.right == other.right and self.w_l == other.w_l and
                     self.w_r == other.w_r and self.b == other.b and self.coord == other.coord)
         return False
+
+    def to_list(self):
+        tree_lst_left, tree_lst_right = [], []
+        id_left, id_right = -1, -1
+        if self.left is not None:
+            tree_lst_left = self.left.to_list()
+            id_left = self.left.id
+        if self.right is not None:
+            tree_lst_right = self.right.to_list()
+            id_right = self.right.id
+        curr_node = (self.id, id_left, id_right, self.w_l, self.w_r, self.b, self.coord, self.loss)
+        return [curr_node] + tree_lst_left + tree_lst_right  # concatenate both lists
 
     def predict(self, X):
         f = np.zeros(X.shape[0])
@@ -146,30 +158,61 @@ class TreeEnsemble:
         self.min_samples_leaf = min_samples_leaf
         self.max_depth = max_depth
         self.trees = []
+        self.max_tree_node_id = 0
         self.coords_trees = OrderedDict()
 
     def __repr__(self):
         sorted_trees = sorted(self.trees, key=lambda tree: tree.coord)
         return '\n'.join([str(t) for t in sorted_trees])
 
-    def load(self, path):
-        ensemble_arr = np.loadtxt(path)
+    def load(self, path, iteration=-1):
+        if iteration == -1:  # take all
+            ensemble_arr = np.load(path)
+        else:  # take up to some iteration
+            ensemble_arr = np.load(path)[:iteration+1]
         for i in range(ensemble_arr.shape[0]):
-            w_l, w_r, b, coord = ensemble_arr[i, :]
-            coord = int(coord)
-            tree = Stump(w_l, w_r, b, coord)
-            self.add_weak_learner(tree)
+            # first create all tree nodes and maintain a dictionary with all nodes (for easier look-up later on)
+            node_dict = {}
+            for i_node in range(len(ensemble_arr[i])):
+                if not np.all(ensemble_arr[i][i_node] == 0):
+                    id_, id_left, id_right, w_l, w_r, b, coord, loss = ensemble_arr[i, i_node]
+                    id_, id_left, id_right, coord = int(id_), int(id_left), int(id_right), int(coord)
+                    # create a node, but without any connections to its children
+                    tree = Tree(id_, None, None, w_l, w_r, b, coord, loss)
+                    node_dict[id_] = (tree, id_left, id_right)
+            # then establish the right connections between the nodes of the tree
+            for node in node_dict:
+                tree, id_left, id_right = node_dict[node]
+                if id_left != -1:
+                    tree.left = node_dict[id_left][0]
+                if id_right != -1:
+                    tree.right = node_dict[id_right][0]
+            # add the root as the next element of the ensemble
+            root = node_dict[ensemble_arr[i][0][0]][0]
+            self.add_weak_learner(root, apply_lr=False)
         print('Ensemble of {} learners restored: {}'.format(ensemble_arr.shape[0], path))
 
     def save(self, path):
         if path != '':
-            ensemble_arr = np.zeros([len(self.trees), 4])
+            # note: every tree has potentially a different number of nodes.
+            ensemble_arr = np.zeros([len(self.trees), 2**self.max_depth, 8])
             for i, tree in enumerate(self.trees):
-                ensemble_arr[i, :] = [tree.w_l, tree.w_r, tree.b, tree.coord]
-            np.savetxt(path, ensemble_arr)
+                tree_list = tree.to_list()
+                ensemble_arr[i, :len(tree_list), :] = tree_list  # all tree nodes are in this list
+            np.save(path, ensemble_arr, allow_pickle=False)
 
-    def add_weak_learner(self, tree):
-        tree.w_l, tree.w_r = tree.w_l*self.lr, tree.w_r*self.lr
+    def add_weak_learner(self, tree, apply_lr=True):
+        def adjust_lr(tree, lr):
+            """ Recursively goes over all node values and scales the weights by a the learning rate. """
+            tree.w_l, tree.w_r = tree.w_l*lr, tree.w_r*lr
+            if tree.left is not None:
+                adjust_lr(tree.left, lr)
+            if tree.right is not None:
+                adjust_lr(tree.right, lr)
+            return tree
+
+        if apply_lr:
+            tree = adjust_lr(tree, self.lr)
         self.trees.append(tree)
         if tree.coord not in self.coords_trees:
             self.coords_trees[tree.coord] = []
@@ -246,8 +289,9 @@ class TreeEnsemble:
 
         # create a new tree that will become a node (if further splits are needed)
         # or a leaf (if max_depth or min_samples_leaf is reached)
-        w_l, w_r, b, coord = self.fit_stump(X, y, gamma, model, eps)
-        tree = Tree(None, None, w_l, w_r, b, coord)
+        w_l, w_r, b, coord, loss = self.fit_stump(X, y, gamma, model, eps)
+        tree = Tree(self.max_tree_node_id, None, None, w_l, w_r, b, coord, loss)
+        self.max_tree_node_id += 1
 
         if tree.coord == -1:  # no further splits because min_samples_leaf is reached
             return None
@@ -472,6 +516,7 @@ class TreeEnsemble:
             params[trial, :] = [w_l_opt, w_r_opt, b_opt, coord]
 
         id_best_coord = min_losses[:n_trials_coord].argmin()
+        min_loss = min_losses[id_best_coord]
         best_coord = int(params[id_best_coord][3])  # float to int is necessary for a coordinate
-        return params[id_best_coord][0], params[id_best_coord][1], params[id_best_coord][2], best_coord
+        return params[id_best_coord][0], params[id_best_coord][1], params[id_best_coord][2], best_coord, min_loss
 

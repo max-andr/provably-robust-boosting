@@ -2,7 +2,7 @@
 
 **Maksym Andriushchenko, Matthias Hein**
 
-**University of Tübingen and Saarland University**
+**University of Tübingen**
 
 [http://arxiv.org/abs/1906.03526](http://arxiv.org/abs/1906.03526)
 
@@ -105,8 +105,7 @@ X_train, y_train, X_test, y_test, eps = data.all_datasets_dict['diabetes']()
 
 # initialize a tree ensemble with some hyperparameters
 ensemble = TreeEnsemble(weak_learner='tree', n_trials_coord=X_train.shape[1], 
-                        lr=1.0, min_samples_split=5, min_samples_leaf=10, max_depth=2, 
-                        gamma_hp=0.0, max_weight=1.0)
+                        lr=1.0, min_samples_split=5, min_samples_leaf=10, max_depth=2)
 # initialize gammas, per-example weights which are recalculated each iteration
 gamma = np.ones(X_train.shape[0])
 for i in range(1, n_trees + 1):
@@ -124,16 +123,17 @@ for i in range(1, n_trees + 1):
         i, np.mean(yf_test < 0.0), np.mean(min_yf_test < 0.0)))
 ```
 ```
-Iteration: 1, test error: 27.27%, upper bound on robust test error: 35.06%
-Iteration: 2, test error: 28.57%, upper bound on robust test error: 36.36%
-Iteration: 3, test error: 28.57%, upper bound on robust test error: 36.36%
-Iteration: 4, test error: 27.92%, upper bound on robust test error: 34.42%
-Iteration: 5, test error: 27.92%, upper bound on robust test error: 34.42%
-Iteration: 6, test error: 25.97%, upper bound on robust test error: 33.12%
-Iteration: 7, test error: 25.97%, upper bound on robust test error: 33.12%
-Iteration: 8, test error: 25.97%, upper bound on robust test error: 33.12%
-Iteration: 9, test error: 25.97%, upper bound on robust test error: 33.12%
-Iteration: 10, test error: 24.68%, upper bound on robust test error: 32.47%
+Iteration: 1, test error: 24.68%, upper bound on robust test error: 32.47%
+Iteration: 2, test error: 23.38%, upper bound on robust test error: 32.47%
+Iteration: 3, test error: 23.38%, upper bound on robust test error: 32.47%
+Iteration: 4, test error: 23.38%, upper bound on robust test error: 32.47%
+Iteration: 5, test error: 24.03%, upper bound on robust test error: 33.12%
+Iteration: 6, test error: 24.03%, upper bound on robust test error: 33.12%
+Iteration: 7, test error: 24.03%, upper bound on robust test error: 33.12%
+Iteration: 8, test error: 24.03%, upper bound on robust test error: 33.12%
+Iteration: 9, test error: 24.03%, upper bound on robust test error: 33.12%
+Iteration: 10, test error: 24.03%, upper bound on robust test error: 33.12%
+
 ```
 
 ### Jupyter notebooks to reproduce the figures
