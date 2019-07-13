@@ -17,7 +17,7 @@ We provide code for **all** reported experiments with robust stumps and robust t
 (`exps.sh` to train the models). 
 Moreover, to foster reproducible research, we also provide code for **all** figures shown in the paper, 
 each as a separate Jupyter notebook
-(`toy2d.ipynb`, `model_analysis.ipynb`, `exact_adv.ipynb`). All dependencies are collected in `Dockerfile`.
+(`notebooks/toy2d.ipynb`, `notebooks/model_analysis.ipynb`, `notebooks/exact_adv.ipynb`). All dependencies are collected in `Dockerfile`.
 
 
 ## Main idea
@@ -137,11 +137,11 @@ Iteration: 10, test error: 24.68%, upper bound on robust test error: 32.47%
 ```
 
 ### Jupyter notebooks to reproduce the figures
-- `toy2d.ipynb` - Figure 1: toy dataset which shows that the usual training is non-robust, while our robust models
+- `notebooks/toy2d.ipynb` - Figure 1: toy dataset which shows that the usual training is non-robust, while our robust models
 can robustly classify all training points.
-- `model_analysis.ipynb` - Figure 2: histograms of splitting thresholds, where we can observe a clear effect of 
+- `notebooks/model_analysis.ipynb` - Figure 2: histograms of splitting thresholds, where we can observe a clear effect of 
 robust training on the choice of the splitting thresholds.
-- `exact_adv.ipynb` - Figure 3: exact adversarial examples for boosted stumps, 
+- `notebooks/exact_adv.ipynb` - Figure 3: exact adversarial examples for boosted stumps, 
 which are much larger in Linf-norm for robust models. 
 
 ### Dependencies
