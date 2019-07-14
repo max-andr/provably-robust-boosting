@@ -4,23 +4,25 @@
 
 **University of Tübingen**
 
-[http://arxiv.org/abs/1906.03526](http://arxiv.org/abs/1906.03526)
+**Paper:** [http://arxiv.org/abs/1906.03526](http://arxiv.org/abs/1906.03526)
+
+This repository contains transparent `python` code for training provably robust boosted decision 
+stumps and trees. To foster reproducible research, we also provide code for **all** experiments 
+reported in the paper (see `exps.sh`). 
+Moreover, we also provide code for  **all** figures shown in the paper, each as a separate 
+Jupyter notebook
+(`notebooks/toy2d.ipynb`, `notebooks/model_analysis.ipynb`, `notebooks/exact_adv.ipynb`). 
+All dependencies are collected in `Dockerfile`.
 
 **Update**: now all our provably robust tree models are publicly available in folder `models`. 
 Since we perform sound, but incomplete robustness verification, there is still some room for improvement 
 (e.g. on MNIST 2-6), especially for larger Linf radii. We encourage researchers that work on verification
-of tree ensembles to benchmark the speed of their methods on our robust ensembles.
+of tree ensembles to benchmark the speed of their methods on our robust ensembles since
+naturally trained ensembles are *extremely non-robust* (see tables and adversarial examples).
 
 
-## Reproducible research
-We provide code for **all** reported experiments with robust stumps and robust trees 
-(`exps.sh` to train the models). 
-Moreover, to foster reproducible research, we also provide code for **all** figures shown in the paper, 
-each as a separate Jupyter notebook
-(`notebooks/toy2d.ipynb`, `notebooks/model_analysis.ipynb`, `notebooks/exact_adv.ipynb`). All dependencies are collected in `Dockerfile`.
 
-
-## Main idea
+## Main idea of the paper
 We propose provable defenses against adversarial attack for boosted decision stumps and trees.
 Here is the effect of our method on a 2D dataset.
 <p align="center"><img src="images/toy2d_stumps_trees.png" width="900"></p>
@@ -39,7 +41,7 @@ becomes tight after robust training.
 Then we integrate these certificates into training which leads to the exact robust loss or to an upper bound on 
 the robust loss for stumps and trees respectively.
 
-How we minimize these robust losses? Surprisingly, it results in a convex optimization problem wrt the parameters of 
+How we minimize these robust losses? Surprisingly, it results in a **convex optimization problem** wrt the parameters of 
 the stumps or trees. We use coordinate descent combined with bisection to solve for w_r and w_l. 
 For more details, see the paper.
 
@@ -72,28 +74,9 @@ for classification. Here is an example for the first 10 trees of our provably ro
 
 
 ## Code for training provably robust boosted stumps and trees
-### Training
-One can train robust stumps or trees using `train.py`.  The full list of possible arguments is 
-available by `python train.py --help`. 
-
-Boosted stumps models:
-- `python train.py --dataset=mnist_2_6 --weak_learner=stump --model=plain `  
-- `python train.py --dataset=mnist_2_6 --weak_learner=stump --model=robust_bound`
-- `python train.py --dataset=mnist_2_6 --weak_learner=stump --model=robust_exact`
-
-Boosted trees models:
-- `python train.py --dataset=mnist_2_6 --weak_learner=tree --model=plain `  
-- `python train.py --dataset=mnist_2_6 --weak_learner=tree --model=robust_bound`
-
-Note that Linf epsilons for adversarial attacks are specified for each dataset separately in `data.py`.
 
 
-### Evaluation
-`eval.py` and `exact_adv.ipynb` show how one can restore a trained model in order to evaluate it (e.g., to
-show the exact adversarial examples).
-
-
-### A simple example of training provably robust boosted trees
+### Simple example
 ```python
 import numpy as np
 import data
@@ -135,6 +118,28 @@ Iteration: 9, test error: 24.03%, upper bound on robust test error: 33.12%
 Iteration: 10, test error: 24.03%, upper bound on robust test error: 33.12%
 
 ```
+
+
+### Full training
+One can train robust stumps or trees using `train.py`.  The full list of possible arguments is 
+available by `python train.py --help`. 
+
+Boosted stumps models:
+- `python train.py --dataset=mnist_2_6 --weak_learner=stump --model=plain `  
+- `python train.py --dataset=mnist_2_6 --weak_learner=stump --model=robust_bound`
+- `python train.py --dataset=mnist_2_6 --weak_learner=stump --model=robust_exact`
+
+Boosted trees models:
+- `python train.py --dataset=mnist_2_6 --weak_learner=tree --model=plain `  
+- `python train.py --dataset=mnist_2_6 --weak_learner=tree --model=robust_bound`
+
+Note that Linf epsilons for adversarial attacks are specified for each dataset separately in `data.py`.
+
+
+### Evaluation
+`eval.py` and `exact_adv.ipynb` show how one can restore a trained model in order to evaluate it (e.g., to
+show the exact adversarial examples).
+
 
 ### Jupyter notebooks to reproduce the figures
 - `notebooks/toy2d.ipynb` - Figure 1: toy dataset which shows that the usual training is non-robust, while our robust models
