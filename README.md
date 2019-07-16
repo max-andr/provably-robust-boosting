@@ -135,6 +135,11 @@ Boosted trees models:
 
 Note that Linf epsilons for adversarial attacks are specified for each dataset separately in `data.py`.
 
+In case you experience excessive memory usage, just set `parallel=False` in the decorators of 
+functions `fit_plain_stumps()` or `fit_robust_bound_stumps()`. 
+This might happen to a bug in `numba` that does not free the used memory.
+This memory issue will be fixed in the next version of this repository.
+
 
 ### Evaluation
 `eval.py` and `exact_adv.ipynb` show how one can restore a trained model in order to evaluate it (e.g., to
@@ -148,6 +153,7 @@ can robustly classify all training points.
 robust training on the choice of the splitting thresholds.
 - `notebooks/exact_adv.ipynb` - Figure 3: exact adversarial examples for boosted stumps, 
 which are much larger in Linf-norm for robust models. 
+
 
 ### Dependencies
 All dependencies are collected in `Dockerfile`.
