@@ -173,7 +173,7 @@ Please contact [Maksym Andriushchenko](https://github.com/max-andr) regarding th
 @article{andriushchenko2019provably,
   title={Provably Robust Boosted Decision Stumps and Trees against Adversarial Attacks},
   author={Andriushchenko, Maksym and Hein, Matthias},
-  conference={arXiv preprint arXiv:1906.03526},
+  conference={Advances in Neural Information Processing Systems},
   year={2019}
 }
 ```
