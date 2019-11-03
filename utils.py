@@ -1,5 +1,6 @@
 import os
 import numpy as np
+import glob
 from numba import jit
 
 
@@ -55,3 +56,69 @@ def print_arr(arr):
         for el in row:
             string += '{:.3f} '.format(el)
         print(i+1, string)
+
+
+def extract_hyperparam(model_name, substr):
+    return model_name.split(substr)[1].split(' ')[0]
+
+
+def finalize_curr_row(latex_str, weak_learner, flag_n_trees_latex):
+    # finalizing the current row: apply boldfacing and add \\
+    # (relies on the fact that we have only 3 metrics, i.e. TE,RTE,URTE or TE,LRTE,URTE or 4 metrics if flag_n_trees_latex is on)
+    # result: 'breast-cancer & 0.3 & 0.7 & 85.4 & 85.4 & 5.1 & 11.7 & 11.7 & 5.1 & 11.7 & 11.7'
+    curr_row = latex_str.split(r'\\')[-1]
+    curr_str_bf = ' & '.join(curr_row.split(' & ')[:2]) + ' &   '
+    metrics_str = ' & '.join(curr_row.split(' & ')[2:])
+    n_metrics = 4 if flag_n_trees_latex else 3
+    metrics_curr_row = dict([(i, []) for i in range(n_metrics)])
+    # result: {0: [0.7, 5.1, 5.1], 1: [85.4, 11.7, 11.7], 2: [85.4, 11.7, 11.7]}
+    for i_val, val_str in enumerate(metrics_str.split(' & ')):
+        # for n_trees we need int, for the rest float
+        val = int(val_str) if flag_n_trees_latex and i_val % n_metrics == n_metrics - 1 else float(val_str)
+        metrics_curr_row[i_val % n_metrics].append(val)
+    # form the boldfaced str that corresponds to the current row
+    for tup in zip(*metrics_curr_row.values()):
+        for i_m, m in enumerate(tup):
+            # boldfacing condition: if minimum and it's not the number of trees (if the flag is turned on)
+            if (m == min(metrics_curr_row[i_m]) and not (flag_n_trees_latex and i_m == 3) and
+                    not (weak_learner == 'stump' and i_m == 2)):  # if URTE for stumps, don't boldface
+                curr_str_bf += '\\textbf{' + str(m) + '} & '
+            else:
+                curr_str_bf += '{} & '.format(m)
+        curr_str_bf += '  '  # just a margin for better latex code quality
+    curr_str_bf = curr_str_bf.strip()[:-1]  # get rid of the last ' &   '
+    curr_row_final = curr_str_bf + r'\\' + '\n'  # new table line
+    return curr_row_final
+
+
+def get_model_names(datasets, models, exp_folder, weak_learner, tree_depth):
+    model_names = []
+    for dataset in datasets:
+        for model in models:
+            depth_str = 'max_depth=' + str(tree_depth) if weak_learner == 'tree' else ''
+            search_str = '{}/*dataset={} weak_learner={} model={}*{}*.metrics'.format(
+                exp_folder, dataset, weak_learner, model, depth_str)
+            model_names_curr = glob.glob(search_str)
+            model_names_curr.sort(key=lambda x: os.path.getmtime(x))
+            if model_names_curr != []:
+                # model_name_final = model_names_curr[-1]
+                for model_name_final in model_names_curr:
+                    model_name_final = model_name_final.split('.metrics')[0].split(exp_folder+'/')[1]
+                    model_names.append(model_name_final)
+    return model_names
+
+
+def get_n_proc(n_ex):
+    if n_ex > 40000:
+        n_proc = 50
+    elif n_ex > 20000:
+        n_proc = 40
+    elif n_ex > 2500:
+        n_proc = 25
+    elif n_ex > 1000:
+        n_proc = 10
+    elif n_ex > 200:
+        n_proc = 5
+    else:
+        n_proc = 1
+    return n_proc

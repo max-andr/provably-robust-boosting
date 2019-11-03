@@ -1,15 +1,15 @@
 import numpy as np
-import ipdb as pdb
-from numba import jit, prange
+from numba import jit
 from collections import OrderedDict
-from robust_boosting import exp_loss_robust, coord_descent_exp_loss, bisect_coord_descent, calc_h, \
-    basic_case_two_intervals, dtype
-from utils import minimum, get_contiguous_indices
+from robust_boosting import exp_loss_robust, dtype, fit_plain_stumps, fit_robust_bound_stumps, fit_robust_exact_stumps
+from utils import minimum, get_contiguous_indices, get_n_proc
+from concurrent.futures import ThreadPoolExecutor
 
 
 class Stump:
-    def __init__(self, w_l, w_r, b, coord):
-        self.w_l, self.w_r, self.b, self.coord = w_l, w_r, b, coord
+    def __init__(self, w_l, w_r, b, coord, loss):
+        # `loss` is the loss of the whole ensemble after applying this stump
+        self.w_l, self.w_r, self.b, self.coord, self.loss = w_l, w_r, b, coord, loss
         self.left, self.right = None, None
 
     def predict(self, X):
@@ -31,14 +31,29 @@ class Stump:
 
     def __repr__(self):
         lval, rval, threshold = self.w_l, self.w_r + self.w_l, self.b
-        return 'Tree: if x[{}] < {:.4f}: {:.4f} else {:.4f}'.format(self.coord, lval, threshold, rval)
+        return 'Tree: if x[{}] < {:.4f}: {:.4f} else {:.4f}'.format(self.coord, threshold, lval, rval)
+
+    def get_json_dict(self, counter_terminal_nodes):
+        """
+        counter_terminal_nodes: not used here
+        """
+        precision = 5
+        children_list = [{'nodeid': 1, 'leaf': round(self.w_l, precision)},
+                         {'nodeid': 2, 'leaf': round(self.w_l + self.w_r, precision)}]
+        stump_dict = {'nodeid': 0, 'split': 'f' + str(int(self.coord)), 'split_condition': round(self.b, precision),
+                      'yes': 1, 'no': 2, 'children': children_list}
+
+        return stump_dict, counter_terminal_nodes
 
 
 class StumpEnsemble:
-    def __init__(self, weak_learner, n_trials_coord, lr):
+    def __init__(self, weak_learner, n_trials_coord, lr, idx_clsf, n_bins=-1, max_weight=1.0):
         self.weak_learner = weak_learner
         self.n_trials_coord = n_trials_coord
         self.lr = lr
+        self.idx_clsf = idx_clsf
+        self.n_bins = n_bins
+        self.max_weight = max_weight
         self.trees = []
         self.coords_trees = OrderedDict()
 
@@ -46,32 +61,44 @@ class StumpEnsemble:
         sorted_trees = sorted(self.trees, key=lambda tree: tree.coord)
         return '\n'.join([str(t) for t in sorted_trees])
 
-    def load(self, path, iteration=-1):
-        if iteration == -1:  # take all
-            ensemble_arr = np.loadtxt(path)
-        else:  # take up to some iteration
-            ensemble_arr = np.loadtxt(path)[:iteration+1]
+    def copy(self):
+        ensemble_new = StumpEnsemble(self.weak_learner, self.n_trials_coord, self.lr, self.idx_clsf, self.n_bins,
+                                     self.max_weight)
+        for tree in self.trees:
+            ensemble_new.add_weak_learner(tree, apply_lr=False)
+        return ensemble_new
+
+    def load(self, ensemble_arr, iteration=-1):
+        if iteration != -1:  # take up to some iteration
+            ensemble_arr = ensemble_arr[:iteration+1]
         for i in range(ensemble_arr.shape[0]):
-            w_l, w_r, b, coord = ensemble_arr[i, :]
+            w_l, w_r, b, coord, loss = ensemble_arr[i, :]
             coord = int(coord)
-            tree = Stump(w_l, w_r, b, coord)
-            self.add_weak_learner(tree)
-        print('Ensemble of {} learners restored: {}'.format(ensemble_arr.shape[0], path))
+            tree = Stump(w_l, w_r, b, coord, loss)
+            # the values of w_l and w_r should be already scaled by lr, would be wrong to do this again
+            self.add_weak_learner(tree, apply_lr=False)
+
+    def export_model(self):
+        ensemble_arr = np.zeros([len(self.trees), 5])
+        for i, tree in enumerate(self.trees):
+            ensemble_arr[i, :] = [tree.w_l, tree.w_r, tree.b, tree.coord, tree.loss]
+        return ensemble_arr
 
     def save(self, path):
         if path != '':
-            ensemble_arr = np.zeros([len(self.trees), 4])
-            for i, tree in enumerate(self.trees):
-                ensemble_arr[i, :] = [tree.w_l, tree.w_r, tree.b, tree.coord]
-            np.savetxt(path, ensemble_arr)
+            np.save(path, self.export_model(), allow_pickle=False)
 
-    def add_weak_learner(self, tree):
-        tree.w_l, tree.w_r = tree.w_l*self.lr, tree.w_r*self.lr
+    def add_weak_learner(self, tree, apply_lr=True):
+        if apply_lr:
+            tree.w_l, tree.w_r = tree.w_l*self.lr, tree.w_r*self.lr
         self.trees.append(tree)
         if tree.coord not in self.coords_trees:
             self.coords_trees[tree.coord] = []
         self.coords_trees[tree.coord].append(tree)
-        print(tree)
+
+    def add_empty_weak_learner(self):
+        empty_stump = Stump(0.0, 0.0, 0.0, 0, 0.0)
+        self.add_weak_learner(empty_stump)
 
     def predict(self, X):
         Fx = np.zeros(X.shape[0])
@@ -83,7 +110,7 @@ class StumpEnsemble:
         """ A simple attack just by sampling in the Linf-box around the points. More of a sanity check. """
         num, dim = X.shape
         f_x_vals = np.zeros((num, n_trials))
-        # Note: for efficiency, we sample the same random direction for all points, but this does influence matter
+        # Note: for efficiency, we sample the same random direction for all points
         deltas = np.random.uniform(-eps, eps, size=(dim, n_trials))
         for i in range(n_trials-1):
             # let's keep them as real images, although not strictly needed
@@ -95,7 +122,7 @@ class StumpEnsemble:
         f_x_min = np.min(y[:, None] * f_x_vals, axis=1)
         return f_x_min
 
-    def certify_treewise_bound(self, X, y, eps):
+    def certify_treewise(self, X, y, eps):
         lb_ensemble = np.zeros(X.shape[0])
 
         # The naive tree-wise bounded on the merged trees
@@ -138,257 +165,177 @@ class StumpEnsemble:
                 f_x_min_coord_base += y * tree.predict(X - eps)
                 thresholds[i], w_r_values[i] = tree.b, tree.w_r
 
+            # merge trees with the same thresholds to prevent an overestimation (lower bounding) of the true minimum
+            thresholds_list, w_r_values_list = [], []
+            for threshold in np.unique(thresholds):
+                thresholds_list.append(threshold)
+                w_r_values_list.append(np.sum(w_r_values[thresholds == threshold]))
+            thresholds, w_r_values = np.array(thresholds_list), np.array(w_r_values_list)
+
             f_x_min += f_x_min_coord_base + self.find_min_coord_diff(X[:, coord], y, thresholds, w_r_values, eps)
         return f_x_min
 
-    def exact_adv_example(self, X, y):
-        min_val = 1e-7
-        num, dim = X.shape
-        deltas = np.zeros([num, dim])
-        db_dists = np.full(num, np.inf)
+    def fit_stumps_over_coords(self, X, y, gamma, model, eps):
+        verbose = False
+        parallel = False  # can speed up the training on large datasets
+        n_ex = X.shape[0]
+        X, y, gamma = X.astype(dtype), y.astype(dtype), gamma.astype(dtype)
+        prev_loss = np.mean(gamma)
 
-        for i in range(num):
-            # 0.0 means we just check whether the point is originally misclassified; if yes  =>  db_dist=0
-            eps_all_i = np.array([0.0] + [np.abs(tree.b - X[i, tree.coord] + min_val*np.sign(tree.b - X[i, tree.coord]))
-                                          for tree in self.trees])
-            eps_sorted = np.sort(eps_all_i)
-            for eps in eps_sorted:
-                # Vectorized but obscure version; just a sanity check for eps; doesn't return deltas
-                # f_x_min = self.certify_exact(X[None, i], y[None, i], eps)
-
-                # Clear unvectorized version
-                yf_min = 0.0
-                delta = np.zeros(dim)
-                for coord in self.coords_trees.keys():
-                    trees_current_coord = self.coords_trees[coord]
-
-                    yf_min_coord_base, yf_orig_pt = 0.0, 0.0
-                    for tree in trees_current_coord:
-                        yf_min_coord_base += y[i] * tree.predict(X[None, i] - eps)
-                        yf_orig_pt += y[i] * tree.predict(X[None, i])
-
-                    unstable_thresholds, unstable_wr_values = [X[i, coord] - eps], [0.0]
-                    for tree in trees_current_coord:
-                        # excluding the left equality since we have already evaluated it
-                        if X[i, coord] - eps < tree.b <= X[i, coord] + eps:
-                            unstable_thresholds.append(tree.b)
-                            unstable_wr_values.append(tree.w_r)
-                    unstable_thresholds = np.array(unstable_thresholds)
-                    unstable_wr_values = np.array(unstable_wr_values)
-                    idx = np.argsort(unstable_thresholds)
-                    unstable_thresholds = unstable_thresholds[idx]
-
-                    sorted_y_wr = (y[i] * np.array(unstable_wr_values))[idx]
-                    yf_coord_interval_vals = np.cumsum(sorted_y_wr)
-                    yf_min_coord = yf_min_coord_base + yf_coord_interval_vals.min()
-                    yf_min += yf_min_coord
-
-                    i_opt_threshold = yf_coord_interval_vals.argmin()
-                    # if the min value is attained at the point itself, take it instead; so that we do not take
-                    # unnecessary -eps deltas (which would not anyway influence Linf size, but would bias the picture)
-                    if yf_min_coord == yf_orig_pt:
-                        opt_threshold = X[i, coord]  # i.e. the final delta is 0.0
-                    else:
-                        opt_threshold = unstable_thresholds[i_opt_threshold]
-                    delta[coord] = opt_threshold - X[i, coord]
-
-                x_adv_clipped = np.clip(X[i] + delta, 0, 1)  # make sure that the images are valid
-                delta = x_adv_clipped - X[i]
-
-                yf = float(y[i] * self.predict(X[None, i] + delta[None]))
-                print('eps_max={:.3f}, eps_delta={:.3f}, yf={:.3f}, nnz={}'.format(
-                    eps, np.abs(delta).max(), yf, (delta != 0.0).sum()))
-                if yf_min < 0:
-                    db_dists[i] = eps
-                    deltas[i] = delta
-                    break
-            print()
-            yf = y[i] * self.predict(X[None, i] + deltas[None, i])
-            if yf >= 0.0:
-                print('The class was not changed! Some bug!')
-                import ipdb;ipdb.set_trace()
-        return deltas
-
-    @staticmethod
-    @jit(nopython=True, parallel=True)  # parallel=True really matters, especially with independent iterations
-    def fit_plain_stumps(X_proj, y, gamma, b_vals):
-        n_thresholds = b_vals.shape[0]
-
-        losses = np.full(n_thresholds, np.inf, dtype=dtype)
-        w_l_vals = np.full(n_thresholds, np.inf, dtype=dtype)
-        w_r_vals = np.full(n_thresholds, np.inf, dtype=dtype)
-        sum_1, sum_m1 = np.sum((y == 1) * gamma), np.sum((y == -1) * gamma)
-        for i in prange(n_thresholds):
-            ind = X_proj >= b_vals[i]
-
-            sum_1_1, sum_1_m1 = np.sum(ind * (y == 1) * gamma), np.sum(ind * (y == -1) * gamma)
-            sum_0_1, sum_0_m1 = sum_1 - sum_1_1, sum_m1 - sum_1_m1
-            w_l, w_r = coord_descent_exp_loss(sum_1_1, sum_1_m1, sum_0_1, sum_0_m1)
-
-            fmargin = y*w_l + y*w_r*ind
-            loss = np.mean(gamma * np.exp(-fmargin))
-            losses[i], w_l_vals[i], w_r_vals[i] = loss, w_l, w_r
-
-        return losses, w_l_vals, w_r_vals, b_vals
-
-    @staticmethod
-    @jit(nopython=True, parallel=True)  # parallel=True really matters, especially with independent iterations
-    def fit_robust_bound_stumps(X_proj, y, gamma, b_vals, eps):
-        n_thresholds = b_vals.shape[0]
-
-        losses = np.full(n_thresholds, np.inf, dtype=dtype)
-        w_l_vals = np.full(n_thresholds, np.inf, dtype=dtype)
-        w_r_vals = np.full(n_thresholds, np.inf, dtype=dtype)
-        sum_1, sum_m1 = np.sum((y == 1) * gamma), np.sum((y == -1) * gamma)
-        for i in prange(n_thresholds):
-            # Certification for the previous ensemble O(n)
-            split_lbs, split_ubs = X_proj - eps, X_proj + eps
-            guaranteed_right = split_lbs > b_vals[i]
-            uncertain = (split_lbs <= b_vals[i]) * (split_ubs >= b_vals[i])
-
-            loss, w_l, w_r = basic_case_two_intervals(y, gamma, guaranteed_right, uncertain, sum_1, sum_m1)
-            losses[i], w_l_vals[i], w_r_vals[i] = loss, w_l, w_r
-
-        return losses, w_l_vals, w_r_vals, b_vals
-
-    @staticmethod
-    @jit(nopython=True, parallel=True)  # parallel=True really matters, especially with independent iterations
-    def fit_robust_exact_stumps(X_proj, y, gamma, b_vals, eps, w_rs, bs):
-        n_thresholds = b_vals.shape[0]
-
-        losses = np.full(n_thresholds, np.inf, dtype=dtype)
-        w_l_vals = np.full(n_thresholds, np.inf, dtype=dtype)
-        w_r_vals = np.full(n_thresholds, np.inf, dtype=dtype)
-        sum_1, sum_m1 = np.sum((y == 1) * gamma), np.sum((y == -1) * gamma)
-        for i in prange(n_thresholds):
-            # Certification for the previous ensemble O(n)
-            split_lbs, split_ubs = X_proj - eps, X_proj + eps
-            guaranteed_right = split_lbs > b_vals[i]
-            uncertain = (split_lbs <= b_vals[i]) * (split_ubs >= b_vals[i])
-
-            h_l, h_r = calc_h(X_proj, y, w_rs, bs, b_vals[i], eps)
-            # there should be quite many useless coordinates which do not have any stumps in the ensemble
-            # thus h_l=h_r=0  =>  suffices to check just 2 regions without applying bisection
-            if np.sum(h_l) == 0.0 and np.sum(h_r) == 0.0:
-                loss, w_l, w_r = basic_case_two_intervals(y, gamma, guaranteed_right, uncertain, sum_1, sum_m1)
-            else:  # general case; happens only when `coord` was already splitted in the previous iterations
-                loss, w_l, w_r = bisect_coord_descent(y, gamma, h_l, h_r, guaranteed_right, uncertain)
-
-            losses[i], w_l_vals[i], w_r_vals[i] = loss, w_l, w_r
-
-        return losses, w_l_vals, w_r_vals, b_vals
-
-    def fit_stump(self, X, y, gamma_global, model, eps):
-        n_trials_coord = self.n_trials_coord
-        X, y, gamma_global = X.astype(dtype), y.astype(dtype), gamma_global.astype(dtype)
-
-        num, dim = X.shape
-        params, min_losses = np.zeros((n_trials_coord, 4)), np.full(n_trials_coord, np.inf)
-
-        # 151 features are always 0.0 on MNIST 2 vs 6. Doesn't even makes sense to consider them.
+        # 151 features are always 0.0 on MNIST 2 vs 6. And this number is even higher for smaller subsets of MNIST,
+        # i.e. subsets of examples partitioned by tree splits.
         idx_non_trivial = np.abs(X).sum(axis=0) > 0.0
-        features_to_check = list(np.arange(dim)[idx_non_trivial])
-        np.random.shuffle(features_to_check)  # shuffles in-place
-        for trial in prange(n_trials_coord):
-            if len(features_to_check) > 0:
-                coord = features_to_check.pop()  # takes the last element
+        features_to_check = np.random.permutation(np.where(idx_non_trivial)[0])[:self.n_trials_coord]
+
+        n_coords = len(features_to_check)
+        params, min_losses = np.zeros((n_coords, 4)), np.full(n_coords, np.inf)
+
+        if parallel:
+            n_proc = get_n_proc(n_ex)
+            n_proc = min(n_coords, min(100, n_proc))
+            batch_size = n_coords // n_proc
+            n_batches = n_coords // batch_size + 1
+
+            with ThreadPoolExecutor(max_workers=n_proc) as executor:
+                procs = []
+                for i_batch in range(n_batches):
+                    coords = features_to_check[i_batch*batch_size:(i_batch+1)*batch_size]
+                    args = (X, X[:, coords], y, gamma, model, eps, coords)
+                    procs.append(executor.submit(self.fit_stump_batch, *args))
+
+                # Process the results
+                i_coord = 0
+                for i_batch in range(n_batches):
+                    res_many = procs[i_batch].result()
+                    for res in res_many:
+                        min_losses[i_coord], *params[i_coord, :] = res
+                        i_coord += 1
+        else:
+            for i_coord, coord in enumerate(features_to_check):
+                min_losses[i_coord], *params[i_coord, :] = self.fit_stump(
+                    X, X[:, coord], y, gamma, model, eps, coord)
+
+        id_best_coord = min_losses.argmin()
+        min_loss = min_losses[id_best_coord]
+        best_coord = int(params[id_best_coord][3])  # float to int is necessary for a coordinate
+        best_wl, best_wr, best_b = params[id_best_coord][0], params[id_best_coord][1], np.float32(params[id_best_coord][2])
+        if verbose:
+            print('[{}-vs-all]: n_ex {}, n_coords {} -- loss {:.5f}->{:.5f}, b={:.3f} wl={:.3f} wr={:.3f} at coord {}'.format(
+                self.idx_clsf, n_ex, n_coords, prev_loss, min_loss, best_b, best_wl, best_wr, best_coord))
+        return Stump(best_wl, best_wr, best_b, best_coord, min_loss)
+
+    def fit_stump_batch(self, X, Xs, y, gamma, model, eps, coords):
+        res = np.zeros([len(coords), 5])
+        for i, coord in enumerate(coords):
+            res[i] = self.fit_stump(X, Xs[:, i], y, gamma, model, eps, coord)
+        return res
+
+    def fit_stump(self, X, X_proj, y, gamma_global, model, eps, coord):
+        min_prec_val = 1e-7
+        min_val, max_val = 0.0, 1.0  # can be changed if the features are in a different range
+        n_bins = self.n_bins
+
+        # Needed for exact robust optimization with stumps
+        trees_current_coord = self.coords_trees[coord] if coord in self.coords_trees else []
+        w_rs, bs = np.zeros(len(trees_current_coord)), np.zeros(len(trees_current_coord))
+        for i in range(len(trees_current_coord)):
+            w_rs[i] = trees_current_coord[i].w_r
+            bs[i] = trees_current_coord[i].b
+
+        if model == 'robust_exact' and trees_current_coord != []:  # note: the previous gamma is just ignored
+            min_Fx_y_exact_without_j = self.certify_exact(X, y, eps, coords_to_ignore=(coord, ))
+            w_ls = np.sum([tree.w_l for tree in trees_current_coord])
+            gamma = np.exp(-min_Fx_y_exact_without_j - y*w_ls)
+        else:
+            gamma = gamma_global
+
+        if n_bins > 0:
+            if model == 'robust_bound':
+                # b_vals = np.array([0.31, 0.41, 0.5, 0.59, 0.69])  # that's the thresholds that one gets with n_bins=10
+                b_vals = np.arange(eps * n_bins, n_bins - eps * n_bins + 1) / n_bins
+                # to have some margin to make the thresholds not adversarially reachable from 0 or 1
+                b_vals[b_vals < 0.5] += 0.1 * 1 / n_bins
+                b_vals[b_vals > 0.5] -= 0.1 * 1 / n_bins
             else:
-                self.n_trials_coord = trial
-                break
-            X_proj = X[:, coord]
-
-            # Needed for exact robust optimization with stumps
-            trees_current_coord = self.coords_trees[coord] if coord in self.coords_trees else []
-            w_rs, bs = np.zeros(len(trees_current_coord)), np.zeros(len(trees_current_coord))
-            for i in range(len(trees_current_coord)):
-                w_rs[i] = trees_current_coord[i].w_r
-                bs[i] = trees_current_coord[i].b
-
-            if model == 'robust_exact' and trees_current_coord != []:  # note: the previous gamma is just ignored
-                min_Fx_y_exact_without_j = self.certify_exact(X, y, eps, coords_to_ignore=(coord, ))
-                w_ls = np.sum([tree.w_l for tree in trees_current_coord])
-                gamma = np.exp(-min_Fx_y_exact_without_j - y*w_ls)
-            else:
-                gamma = gamma_global
-
-            min_val = 1e-7
-            if model not in ['robust_exact', 'robust_bound'] or eps == 0.0:  # plain training
-                b_vals = np.copy(X_proj)
-                b_vals += min_val  # to break the ties
+                b_vals = np.arange(1, n_bins) / n_bins
+        else:
+            threshold_candidates = np.sort(X_proj)
+            if len(threshold_candidates) == 0:  # if no samples left according to min_samples_leaf
+                return [np.inf, 0.0, 0.0, 0.0, -1]
+            if model not in ['robust_bound', 'robust_exact'] or eps == 0.0:  # plain, da_uniform or at_cube training
+                b_vals = np.copy(threshold_candidates)
+                b_vals += min_prec_val  # to break the ties
             else:  # robust training
-                b_vals = np.concatenate((X_proj - eps, X_proj + eps), axis=0)  # 2n thresholds
-                # to make in the overlapping case |---x-|--|-x---| output 2 different losses in the middle
-                b_vals += np.concatenate((-np.full(num, min_val), np.full(num, min_val)), axis=0)
+                b_vals = np.concatenate((threshold_candidates - eps, threshold_candidates + eps), axis=0)
+                b_vals = np.clip(b_vals, min_val, max_val)  # save computations (often goes 512 -> 360 thresholds on MNIST)
+                # to make in the overlapping case [---x-[--]-x---] output 2 different losses in the middle
+                n_bs = len(threshold_candidates)
+                b_vals += np.concatenate((-np.full(n_bs, min_prec_val), np.full(n_bs, min_prec_val)), axis=0)
             b_vals = np.unique(b_vals)  # use only unique b's
             b_vals = np.sort(b_vals)  # still important to sort because of the final threshold selection
 
-            if model == 'plain':
-                losses, w_l_vals, w_r_vals, b_vals = self.fit_plain_stumps(X_proj, y, gamma, b_vals)
-            elif model == 'robust_bound':
-                losses, w_l_vals, w_r_vals, b_vals = self.fit_robust_bound_stumps(X_proj, y, gamma, b_vals, eps)
-            elif model == 'robust_exact':
-                losses, w_l_vals, w_r_vals, b_vals = self.fit_robust_exact_stumps(X_proj, y, gamma, b_vals, eps, w_rs, bs)
-            else:
-                raise ValueError('wrong model')
+        if model in ['plain', 'da_uniform', 'at_cube']:
+            losses, w_l_vals, w_r_vals, b_vals = fit_plain_stumps(X_proj, y, gamma, b_vals, self.max_weight)
+        elif model == 'robust_bound':
+            losses, w_l_vals, w_r_vals, b_vals = fit_robust_bound_stumps(X_proj, y, gamma, b_vals, eps, self.max_weight)
+        elif model == 'robust_exact':
+            losses, w_l_vals, w_r_vals, b_vals = fit_robust_exact_stumps(X_proj, y, gamma, b_vals, eps, w_rs, bs, self.max_weight)
+        else:
+            raise ValueError('wrong model')
 
-            min_loss = np.min(losses)
-            # probably, they are already sorted, but to be 100% sure since it is not explicitly mentioned in the docs
-            indices_opt_init = np.sort(np.where(losses == min_loss)[0])
-            indices_opt = get_contiguous_indices(indices_opt_init)
-            id_opt = indices_opt[len(indices_opt) // 2]
+        min_loss = np.min(losses)
+        # probably, they are already sorted, but to be 100% sure since it is not explicitly mentioned in the docs
+        indices_opt_init = np.sort(np.where(losses == min_loss)[0])
+        indices_opt = get_contiguous_indices(indices_opt_init)
+        id_opt = indices_opt[len(indices_opt) // 2]
 
-            idx_prev = np.clip(indices_opt[0]-1, 0, len(b_vals)-1)  # to prevent stepping out of the array
-            idx_next = np.clip(indices_opt[-1]+1, 0, len(b_vals)-1)  # to prevent stepping out of the array
-            b_prev, w_l_prev, w_r_prev = b_vals[idx_prev], w_l_vals[idx_prev], w_r_vals[idx_prev]
-            b_next, w_l_next, w_r_next = b_vals[idx_next], w_l_vals[idx_next], w_r_vals[idx_next]
-            # initialization
-            b_leftmost, b_rightmost = b_vals[indices_opt[0]], b_vals[indices_opt[-1]]
-            # more involved, since with +-eps, an additional check of the loss is needed
-            if model == 'plain':
+        idx_prev = np.clip(indices_opt[0]-1, 0, len(b_vals)-1)  # to prevent stepping out of the array
+        idx_next = np.clip(indices_opt[-1]+1, 0, len(b_vals)-1)  # to prevent stepping out of the array
+        b_prev, w_l_prev, w_r_prev = b_vals[idx_prev], w_l_vals[idx_prev], w_r_vals[idx_prev]
+        b_next, w_l_next, w_r_next = b_vals[idx_next], w_l_vals[idx_next], w_r_vals[idx_next]
+        # initialization
+        b_leftmost, b_rightmost = b_vals[indices_opt[0]], b_vals[indices_opt[-1]]
+        # more involved, since with +-eps, an additional check of the loss is needed
+        if model in ['plain', 'da_uniform', 'at_cube']:
+            b_rightmost = b_next
+        elif model in ['robust_bound', 'robust_exact']:
+            h_flag = False if model == 'robust_bound' else True
+
+            b_prev_half = (b_prev + b_vals[indices_opt[0]]) / 2
+            loss_prev_half = exp_loss_robust(X_proj, y, gamma, w_l_prev, w_r_prev, w_rs, bs, b_prev_half, eps, h_flag)
+
+            b_next_half = (b_vals[indices_opt[-1]] + b_next) / 2
+            loss_next_half = exp_loss_robust(X_proj, y, gamma, w_l_next, w_r_next, w_rs, bs, b_next_half, eps, h_flag)
+
+            # we extend the interval of the constant loss to the left and to the right if there the loss is
+            # the same at b_prev_half or b_next_half
+            if loss_prev_half == losses[id_opt]:
+                b_leftmost = b_prev
+            if loss_next_half == losses[id_opt]:
                 b_rightmost = b_next
-            elif model in ['robust_bound', 'robust_exact']:
-                h_flag = False if model == 'robust_bound' else True
+        else:
+            raise ValueError('wrong model')
 
-                b_prev_half = (b_prev + b_vals[indices_opt[0]]) / 2
-                loss_prev_half = exp_loss_robust(X_proj, y, gamma, w_l_prev, w_r_prev, w_rs, bs, b_prev_half, eps, h_flag)
+        # we put in the middle of the interval of the constant loss
+        b_opt = (b_leftmost + b_rightmost) / 2
 
-                b_next_half = (b_vals[indices_opt[-1]] + b_next) / 2
-                loss_next_half = exp_loss_robust(X_proj, y, gamma, w_l_next, w_r_next, w_rs, bs, b_next_half, eps, h_flag)
+        # For the chosen threshold, we need to calculate w_l, w_r
+        # Some of w_l, w_r that correspond to min_loss may not be optimal anymore
+        b_val_final = np.array([b_opt])
+        if model in ['plain', 'da_uniform', 'at_cube']:
+            loss, w_l_opt, w_r_opt, _ = fit_plain_stumps(X_proj, y, gamma, b_val_final, self.max_weight)
+        elif model == 'robust_bound':
+            loss, w_l_opt, w_r_opt, _ = fit_robust_bound_stumps(X_proj, y, gamma, b_val_final, eps, self.max_weight)
+        elif model == 'robust_exact':
+            loss, w_l_opt, w_r_opt, _ = fit_robust_exact_stumps(X_proj, y, gamma, b_val_final, eps, w_rs, bs, self.max_weight)
+        else:
+            raise ValueError('wrong model')
+        loss, w_l_opt, w_r_opt = loss[0], w_l_opt[0], w_r_opt[0]
+        # recalculation of w_l, w_r shouldn't change the min loss
 
-                # we extend the interval of the constant loss to the left and to the right if there the loss is
-                # the same at b_prev_half or b_next_half
-                if loss_prev_half == losses[id_opt]:
-                    b_leftmost = b_prev
-                if loss_next_half == losses[id_opt]:
-                    b_rightmost = b_next
-            else:
-                raise ValueError('wrong model')
-            # we put in the middle of the interval of the constant loss
-            b_opt = (b_leftmost + b_rightmost) / 2
+        if np.abs(loss - min_loss) > 1e7:
+            print('New loss: {:.5f}, min loss before: {:.5f}'.format(loss, min_loss))
 
-            # For the chosen threshold, we need to calculate w_l, w_r
-            # Some of w_l, w_r that correspond to min_loss may not be optimal anymore
-            b_val_final = np.array([b_opt])
-            if model == 'plain':
-                loss, w_l_opt, w_r_opt, _ = self.fit_plain_stumps(X_proj, y, gamma, b_val_final)
-            elif model == 'robust_bound':
-                loss, w_l_opt, w_r_opt, _ = self.fit_robust_bound_stumps(X_proj, y, gamma, b_val_final, eps)
-            elif model == 'robust_exact':
-                loss, w_l_opt, w_r_opt, _ = self.fit_robust_exact_stumps(X_proj, y, gamma, b_val_final, eps, w_rs, bs)
-            else:
-                raise ValueError('wrong model')
-            loss, w_l_opt, w_r_opt = loss[0], w_l_opt[0], w_r_opt[0]
-            # recalculation of w_l, w_r shouldn't change the min loss
-
-            if np.abs(loss - min_loss) > 1e7:
-                print('New loss: {:.5f}, min loss before: {:.5f}'.format(loss, min_loss))
-
-            min_losses[trial] = losses[id_opt]
-            params[trial, :] = [w_l_opt, w_r_opt, b_opt, coord]
-
-        id_best_coord = min_losses[:n_trials_coord].argmin()
-        best_coord = int(params[id_best_coord][3])  # float to int is necessary for a coordinate
-        w_l, w_r, b, coord = params[id_best_coord][0], params[id_best_coord][1], params[id_best_coord][2], best_coord
-        stump = Stump(w_l, w_r, b, coord)
-        return stump
+        best_loss = losses[id_opt]
+        return [best_loss, w_l_opt, w_r_opt, b_opt, coord]
 

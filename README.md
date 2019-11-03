@@ -1,5 +1,7 @@
 # Provably Robust Boosted Decision Stumps and Trees against Adversarial Attacks 
 
+<p align="center"><img src="images/abstract.png" width="600"></p>
+
 **NeurIPS 2019**
 
 **Maksym Andriushchenko, Matthias Hein**
@@ -8,26 +10,30 @@
 
 **Paper:** [http://arxiv.org/abs/1906.03526](http://arxiv.org/abs/1906.03526)
 
-This repository contains transparent `python` code for training provably robust boosted decision 
-stumps and trees. To foster reproducible research, we also provide code for **all** experiments 
+
+This repository contains `python` code for training provably robust boosted decision 
+stumps and trees. To foster reproducible research, we also provide code for all main experiments 
 reported in the paper (see `exps.sh`). 
-Moreover, we also provide code for  **all** figures shown in the paper, each as a separate 
-Jupyter notebook
-(`notebooks/toy2d.ipynb`, `notebooks/model_analysis.ipynb`, `notebooks/exact_adv.ipynb`). 
+Moreover, we also provide code for all figures shown in the paper, each as a separate Jupyter notebook 
+(see folder `notebooks`). 
 All dependencies are collected in `Dockerfile`.
 
-**Update**: now all our provably robust tree models are publicly available in folder `models`. 
-Since we perform sound, but incomplete robustness verification, there is still some room for improvement 
-(e.g. on MNIST 2-6), especially for larger Linf radii. We encourage researchers that work on verification
-of tree ensembles to benchmark the speed of their methods on our robust ensembles since
-naturally trained ensembles are *extremely non-robust* (see tables and adversarial examples).
+**Models:** All our provably robust models (stumps and trees) are publicly available by 
+[this link](https://drive.google.com/open?id=15p2ihucMVfNXEmqZBJYYvPHDeQjBixV6)
+including our MNIST, FMNIST, and CIFAR-10 models. 
+
+**Version 2.0 of the repository (corresponds to the NeurIPS'19 camera-ready version):**
+- multi-class extension
+- significant speed-up via a parallel tree construction and parallel fitting of stumps to different coordinates
+- fixed memory leak issues due to `numba`
+- improved efficiency of individual tree predictions and certification using `numba`
 
 
 
 ## Main idea of the paper
 We propose provable defenses against adversarial attack for boosted decision stumps and trees.
 Here is the effect of our method on a 2D dataset.
-<p align="center"><img src="images/toy2d_stumps_trees.png" width="900"></p>
+<p align="center"><img src="images/toy2d_stumps_trees.png" width="700"></p>
 
 
 ## Provably robust training
@@ -51,7 +57,14 @@ For more details, see the paper.
 ## Experiments
 Experimental results show the efficiency of the robust training methods for boosted stumps and
 boosted trees:
-<p align="center"><img src="images/tables_rte.png" width="650"></p>
+<p align="center"><img src="images/tables_rte_stumps.png" width="650"></p>
+<p align="center"><img src="images/tables_rte_trees.png" width="650"></p>
+
+Moreover, although decision trees as weak learners are obviously not suitable for computer vision tasks, our robust 
+boosted trees nonetheless show provable robustness **competitive to provably robust CNNs** outperforming almost all 
+proposed in the literature approaches:
+<p align="center"><img src="images/comparison_cnns.png" width="650"></p>
+
 
 
 ## Effect of robust training
@@ -61,9 +74,9 @@ that robust models select
 
 
 ## Exact adversarial examples
-Using our exact certification routine, we can also efficiently find provably minimal (exact) adversarial examples 
-wrt Linf-norm for boosted stumps:
-<p align="center"><img src="images/exact_adv_examples.png" width="800"></p>
+Using our exact certification routine, we can also *efficiently* (without any combinatorial solvers) find provably 
+minimal (exact) adversarial examples wrt Linf-norm for boosted stumps:
+<p align="center"><img src="images/exact_adv_examples.png" width="700"></p>
 
 
 ## Interpretability
@@ -84,41 +97,45 @@ import numpy as np
 import data
 from tree_ensemble import TreeEnsemble
 
-n_trees = 20  # total number of trees in the ensemble
+n_trees = 50  # total number of trees in the ensemble
 model = 'robust_bound'  # robust tree ensemble
-X_train, y_train, X_test, y_test, eps = data.all_datasets_dict['diabetes']()
+X_train, y_train, X_test, y_test, eps = data.all_datasets_dict['breast_cancer']()
+X_train, X_test = data.convert_to_float32(X_train), data.convert_to_float32(X_test)
 
 # initialize a tree ensemble with some hyperparameters
 ensemble = TreeEnsemble(weak_learner='tree', n_trials_coord=X_train.shape[1], 
-                        lr=1.0, min_samples_split=5, min_samples_leaf=10, max_depth=2)
+                        lr=0.01, min_samples_split=10, min_samples_leaf=5, max_depth=4, 
+                        max_weight=1.0, idx_clsf=0)
 # initialize gammas, per-example weights which are recalculated each iteration
 gamma = np.ones(X_train.shape[0])
 for i in range(1, n_trees + 1):
     # fit a new tree in order to minimize the robust loss of the whole ensemble
     weak_learner = ensemble.fit_tree(X_train, y_train, gamma, model, eps, depth=1)
+    margin_prev = ensemble.certify_treewise(X_train, y_train, eps)  # needed for pruning
     ensemble.add_weak_learner(weak_learner)
-    ensemble.prune_last_tree(X_train, y_train, eps, model)
+    ensemble.prune_last_tree(X_train, y_train, margin_prev, eps, model)
     # calculate per-example weights for the next iteration
-    gamma = np.exp(-ensemble.certify_treewise_bound(X_train, y_train, eps))
+    gamma = np.exp(-ensemble.certify_treewise(X_train, y_train, eps))
     
     # track generalization and robustness
     yf_test = y_test * ensemble.predict(X_test)
-    min_yf_test = ensemble.certify_treewise_bound(X_test, y_test, eps)
-    print('Iteration: {}, test error: {:.2%}, upper bound on robust test error: {:.2%}'.format(
-        i, np.mean(yf_test < 0.0), np.mean(min_yf_test < 0.0)))
+    min_yf_test = ensemble.certify_treewise(X_test, y_test, eps)
+    if i == 1 or i % 5 == 0:
+        print('Iteration: {}, test error: {:.2%}, upper bound on robust test error: {:.2%}'.format(
+            i, np.mean(yf_test < 0.0), np.mean(min_yf_test < 0.0)))
 ```
 ```
-Iteration: 1, test error: 24.68%, upper bound on robust test error: 32.47%
-Iteration: 2, test error: 23.38%, upper bound on robust test error: 32.47%
-Iteration: 3, test error: 23.38%, upper bound on robust test error: 32.47%
-Iteration: 4, test error: 23.38%, upper bound on robust test error: 32.47%
-Iteration: 5, test error: 24.03%, upper bound on robust test error: 33.12%
-Iteration: 6, test error: 24.03%, upper bound on robust test error: 33.12%
-Iteration: 7, test error: 24.03%, upper bound on robust test error: 33.12%
-Iteration: 8, test error: 24.03%, upper bound on robust test error: 33.12%
-Iteration: 9, test error: 24.03%, upper bound on robust test error: 33.12%
-Iteration: 10, test error: 24.03%, upper bound on robust test error: 33.12%
-
+Iteration: 1, test error: 2.92%, upper bound on robust test error: 10.95%
+Iteration: 5, test error: 2.92%, upper bound on robust test error: 10.95%
+Iteration: 10, test error: 2.19%, upper bound on robust test error: 10.22%
+Iteration: 15, test error: 2.19%, upper bound on robust test error: 10.22%
+Iteration: 20, test error: 2.19%, upper bound on robust test error: 10.22%
+Iteration: 25, test error: 2.19%, upper bound on robust test error: 10.22%
+Iteration: 30, test error: 1.46%, upper bound on robust test error: 8.03%
+Iteration: 35, test error: 1.46%, upper bound on robust test error: 8.03%
+Iteration: 40, test error: 1.46%, upper bound on robust test error: 7.30%
+Iteration: 45, test error: 1.46%, upper bound on robust test error: 7.30%
+Iteration: 50, test error: 0.73%, upper bound on robust test error: 6.57%
 ```
 
 
@@ -127,33 +144,35 @@ One can train robust stumps or trees using `train.py`.  The full list of possibl
 available by `python train.py --help`. 
 
 Boosted stumps models:
-- `python train.py --dataset=mnist_2_6 --weak_learner=stump --model=plain `  
+- `python train.py --dataset=mnist_2_6 --weak_learner=stump --model=plain`  
+- `python train.py --dataset=mnist_2_6 --weak_learner=stump --model=at_cube --lr=0.01`  
 - `python train.py --dataset=mnist_2_6 --weak_learner=stump --model=robust_bound`
 - `python train.py --dataset=mnist_2_6 --weak_learner=stump --model=robust_exact`
 
 Boosted trees models:
-- `python train.py --dataset=mnist_2_6 --weak_learner=tree --model=plain `  
-- `python train.py --dataset=mnist_2_6 --weak_learner=tree --model=robust_bound`
+- `python train.py --dataset=mnist_2_6 --weak_learner=tree --model=plain --lr=0.2`  
+- `python train.py --dataset=mnist_2_6 --weak_learner=tree --model=at_cube --lr=0.2`  
+- `python train.py --dataset=mnist_2_6 --weak_learner=tree --model=robust_bound --lr=0.2`
 
 Note that Linf epsilons for adversarial attacks are specified for each dataset separately in `data.py`.
 
-In case you experience excessive memory usage, just set `parallel=False` in the decorators of 
-functions `fit_plain_stumps()` or `fit_robust_bound_stumps()`. 
-This might happen to a bug in `numba` that does not free the used memory.
-This memory issue will be fixed in the next version of this repository.
-
 
 ### Evaluation
-`eval.py` and `exact_adv.ipynb` show how one can restore a trained model in order to evaluate it (e.g., to
-show the exact adversarial examples).
+`eval.py` and `notebooks/adv_examples.ipynb` show how one can restore a trained model in order to evaluate it (e.g., 
+calculate the robustness bounds or to show the adversarial examples).
+
+In order to evaluate the boosted tree models using MILP, we refer to [this repository](https://github.com/chenhongge/RobustTrees).
 
 
 ### Jupyter notebooks to reproduce the figures
 - `notebooks/toy2d.ipynb` - Figure 1: toy dataset which shows that the usual training is non-robust, while our robust models
 can robustly classify all training points.
-- `notebooks/model_analysis.ipynb` - Figure 2: histograms of splitting thresholds, where we can observe a clear effect of 
-robust training on the choice of the splitting thresholds.
-- `notebooks/exact_adv.ipynb` - Figure 3: exact adversarial examples for boosted stumps, 
+- `notebooks/minmax_objective.ipynb` - Figure 2: visualization of the min-max objective which is convex wrt its parameters.
+- `notebooks/model_analysis.ipynb` - Figures 3, 8, 9, 10: histograms of splitting thresholds, where we can observe a clear effect of 
+robust training on the choice of the splitting thresholds. Also: Figures 5, 6, 7 show the feature importance plots based
+on the number of times some feature was used for a split.
+- `notebooks/robustness_generalization.ipynb` - Figure 4: the robustness vs accuracy trade-off.
+- `notebooks/adv_examples.ipynb` - Figures 11, 12, 13: exact adversarial examples for boosted stumps, 
 which are much larger in Linf-norm for robust models. 
 
 
