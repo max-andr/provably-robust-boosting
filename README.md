@@ -82,7 +82,7 @@ minimal (exact) adversarial examples wrt Linf-norm for boosted stumps:
 ## Interpretability
 One of the main advantages of boosted trees is their interpretability and transparent decision making.
 Unlike neural networks, tree ensembles can be directly visualized based on which features they actually use 
-for classification. Here is an example for the first 10 trees of our provably robust MNIST 2 vs 6 model:
+for classification. Here is an example of our provably robust boosted trees on MNIST 2 vs 6:
 <!-- ![](images/trees.gif) -->
 <p align="center"><img src="images/trees.gif" width="500"></p>
 
