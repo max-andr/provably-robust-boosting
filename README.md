@@ -205,8 +205,9 @@ hardware, the total depth, and the dataset, so it's hard to give a general advic
 in a way that would maximize the CPU utilization.
 - **Parallelization over thresholds**: This can help if you have a few features, and many thresholds to check. You can 
 set `parallel = True` at the top of `robust_boosting.py`, which would turn on the parallelization over thresholds 
-(due to `numba` library). However, then you have to disable all other parallelizations (i.e. over features and over 
-tree construction) which conflict with `numba`.
+(due to `numba` library). However, then you have to disable all other parallelization methods (i.e. over features and over 
+tree construction, both are in `tree_ensemble.py`, just set `parallel = False` in `fit_tree()` and `fit_stumps_over_coords()`) 
+which conflict with `numba`.
 
 
 ## Contact
