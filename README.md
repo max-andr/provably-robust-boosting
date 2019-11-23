@@ -11,8 +11,10 @@
 **Paper:** [http://arxiv.org/abs/1906.03526](http://arxiv.org/abs/1906.03526)
 
 
-This repository contains `python` code for training provably robust boosted decision 
-stumps and trees. To foster reproducible research, we also provide code for all main experiments 
+This repository contains a mini-library for training provably robust boosted decision 
+stumps and trees written in `python`. Thus, it is easy to modify and experiment with this code, unlike
+the code of `xgboost` or `lightgbm` which are implemented in `C++`.
+To foster reproducible research, we also provide code for all main experiments 
 reported in the paper (see `exps.sh`). 
 Moreover, we also provide code for all figures shown in the paper, each as a separate Jupyter notebook 
 (see folder `notebooks`). 
@@ -156,6 +158,9 @@ Boosted trees models:
 
 Note that Linf epsilons for adversarial attacks are specified for each dataset separately in `data.py`.
 
+See more examples how to train our models on different datasets and in different settings in `exps.sh`.
+
+
 
 ### Evaluation
 `eval.py` and `notebooks/adv_examples.ipynb` show how one can restore a trained model in order to evaluate it (e.g., 
@@ -183,8 +188,30 @@ The best way to reproduce our environment is to use Docker. Just build the image
 - `docker run --name=boost -it -P -p 6001:6001 -t provably_robust_boosting`
 
 
+### Training time
+Running the code on large-scale datasets (especially with many classes) may require quite some time to train. 
+In case you want to get results faster, there are several options to speed it up:
+- **Check fewer thresholds**: You can try to subsample the number of thresholds by using the option `--n_bins=k`. 
+This approach comes with no guarantees, but based on our experience it does not sacrifice the robust 
+accuracy for a *reasonably chosen* `k`, and can save a lot of computations.
+- **Parallelization over features**: The number of processes for this is determined automatically in 
+function `get_n_proc(n_ex)` from `utils.py`. You can adapt this number according to the number of features in 
+your dataset, and the number of available CPU cores.
+- **Parallelization over tree construction**: The tree construction is also parallelized, see `def fit_tree(self, X, y, gamma, model, eps, depth)`.
+You might need to adapt the depth limit under which the tree construction is parallelized, i.e. instead of the default
+value of `4` in line `if parallel and depth <= 4:`, you can increase or reduce this number. Again, it depends on your 
+hardware, the total depth, and the dataset, so it's hard to give a general advice. We recommend to change this value
+in a way that would maximize the CPU utilization.
+- **Parallelization over thresholds**: This can help if you have a few features, and many thresholds to check. You can 
+set `parallel = True` at the top of `robust_boosting.py`, which would turn on the parallelization over thresholds 
+(due to `numba` library). However, then you have to disable all other parallelizations (i.e. over features and over 
+tree construction) which conflict with `numba`.
+
+
 ## Contact
-Please contact [Maksym Andriushchenko](https://github.com/max-andr) regarding this code.
+Do you have a problem or question regarding the code?
+Please don't hesitate to open an issue or contact [Maksym Andriushchenko](https://github.com/max-andr) directly.
+We would also like to hear from you if you find the code useful in some applications.
 
 
 ## Citation
