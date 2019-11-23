@@ -188,9 +188,10 @@ The best way to reproduce our environment is to use Docker. Just build the image
 - `docker run --name=boost -it -P -p 6001:6001 -t provably_robust_boosting`
 
 
-### Training time
-Running the code on large-scale datasets (especially with many classes) may require quite some time to train. 
-In case you want to get results faster, there are several options to speed it up:
+### Faster training
+Running the code on small- and middle-scale datasets should be fast, however large-scale datasets 
+(especially with many classes) may need some time to train. 
+In case you want to get results faster, there are several options to speed up the training:
 - **Check fewer thresholds**: You can try to subsample the number of thresholds by using the option `--n_bins=k`. 
 This approach comes with no guarantees, but based on our experience it does not sacrifice the robust 
 accuracy for a *reasonably chosen* `k`, and can save a lot of computations.
