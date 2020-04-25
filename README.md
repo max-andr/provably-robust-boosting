@@ -210,20 +210,12 @@ tree construction, both are in `tree_ensemble.py`, just set `parallel = False` i
 which conflict with `numba`.
 
 ## Export the model in XGBoost-compatible format
-```
+```python
 import json
 
 ensembles = []
-n_classifiers = n_cls if n_cls > 2 else 1
 for i_clsf in range(n_classifiers):
-    if weak_learner == 'stump':
-        # the hyperparameters of recreated models do not matter (they matter only for training)
-        ensemble = StumpEnsemble(weak_learner, 0, 0, 0, 0, 0)
-    elif weak_learner == 'tree':
-        ensemble = TreeEnsemble(weak_learner, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-    else:
-        raise ValueError('wrong weak learner')
-    ensembles.append(ensemble)
+    ensembles.append(TreeEnsemble(weak_learner, 0, 0, 0, 0, 0, 0, 0, 0, 0))
 
 model_ova = OneVsAllClassifier(ensembles)
 model_ova.load('{}/{}.model.npy'.format(exp_folder, args.model_path), iteration=iter_to_take)
